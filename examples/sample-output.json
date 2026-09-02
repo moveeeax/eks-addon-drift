@@ -1,0 +1,33 @@
+{
+  "summary": {
+    "ok": 1,
+    "behind": 1,
+    "unsupported": 1
+  },
+  "findings": [
+    {
+      "cluster": "prod",
+      "clusterVersion": "1.29",
+      "addon": "coredns",
+      "current": "v1.11.1-eksbuild.9",
+      "recommended": "v1.11.1-eksbuild.9",
+      "class": "ok"
+    },
+    {
+      "cluster": "prod",
+      "clusterVersion": "1.29",
+      "addon": "kube-proxy",
+      "current": "v1.29.0-eksbuild.1",
+      "recommended": "v1.29.3-eksbuild.2",
+      "class": "behind"
+    },
+    {
+      "cluster": "prod",
+      "clusterVersion": "1.29",
+      "addon": "vpc-cni",
+      "current": "v1.16.0-eksbuild.1",
+      "recommended": "v1.18.3-eksbuild.2",
+      "class": "unsupported"
+    }
+  ]
+}

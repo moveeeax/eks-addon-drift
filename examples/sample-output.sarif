@@ -1,0 +1,74 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "eks-addon-drift",
+          "informationUri": "https://github.com/moveeeax/eks-addon-drift",
+          "rules": [
+            {
+              "id": "addon-behind",
+              "name": "AddonBehind",
+              "shortDescription": {
+                "text": "Add-on is behind the latest compatible version"
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              }
+            },
+            {
+              "id": "addon-unsupported",
+              "name": "AddonUnsupported",
+              "shortDescription": {
+                "text": "Add-on version is not compatible with the cluster Kubernetes version"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "addon-behind",
+          "level": "warning",
+          "message": {
+            "text": "Add-on kube-proxy on cluster prod is at v1.29.0-eksbuild.1; latest compatible with Kubernetes 1.29 is v1.29.3-eksbuild.2."
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "name": "kube-proxy",
+                  "fullyQualifiedName": "prod/kube-proxy",
+                  "kind": "resource"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "ruleId": "addon-unsupported",
+          "level": "error",
+          "message": {
+            "text": "Add-on vpc-cni on cluster prod runs v1.16.0-eksbuild.1, which is not compatible with Kubernetes 1.29 (recommended: v1.18.3-eksbuild.2)."
+          },
+          "locations": [
+            {
+              "logicalLocations": [
+                {
+                  "name": "vpc-cni",
+                  "fullyQualifiedName": "prod/vpc-cni",
+                  "kind": "resource"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
