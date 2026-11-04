@@ -1,7 +1,7 @@
 # eks-addon-drift
 
 [![ci](https://github.com/moveeeax/eks-addon-drift/actions/workflows/ci.yml/badge.svg)](https://github.com/moveeeax/eks-addon-drift/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go)](https://go.dev/)
+[![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Every EKS cluster ships `coredns`, `kube-proxy` and `vpc-cni` as managed add-ons,
