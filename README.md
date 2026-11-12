@@ -18,6 +18,9 @@ For every managed add-on on every cluster (or a filtered subset) it reports one 
 
 - **ok** — on the latest version compatible with the cluster's Kubernetes version.
 - **behind** — older, but still compatible.
+- **blocks-upgrade** — compatible today, but not compatible with the
+  `--target-version` you plan to upgrade to. Only reported when
+  `--target-version` is set.
 - **unsupported** — the running version is not in the compatible set for the
   cluster's Kubernetes version (an upgrade risk).
 
@@ -42,6 +45,9 @@ eks-addon-drift check --cluster prod --output json > drift.json
 
 # Fail CI when any add-on is unsupported, emit SARIF for code scanning
 eks-addon-drift check --output sarif --fail-on unsupported > addons.sarif
+
+# Before a control-plane bump: which add-ons must be upgraded first?
+eks-addon-drift check --target-version next --fail-on blocks-upgrade
 ```
 
 Example table:
@@ -55,6 +61,19 @@ prod     1.29  vpc-cni     v1.16.0-eksbuild.1  v1.18.3-eksbuild.2  unsupported
 1 ok, 1 behind, 1 unsupported
 ```
 
+With `--target-version` the table gains three columns: the target version,
+whether the running add-on version is compatible with it, and the latest
+version compatible with it:
+
+```
+CLUSTER  K8S   ADDON       CURRENT             RECOMMENDED         TARGET  TARGET-COMPATIBLE  TARGET-RECOMMENDED  STATUS
+prod     1.29  coredns     v1.11.1-eksbuild.9  v1.11.1-eksbuild.9  1.30    yes                v1.11.3-eksbuild.1  ok
+prod     1.29  kube-proxy  v1.29.0-eksbuild.1  v1.29.3-eksbuild.2  1.30    no                 v1.30.0-eksbuild.3  blocks-upgrade
+prod     1.29  vpc-cni     v1.16.0-eksbuild.1  v1.18.3-eksbuild.2  1.30    no                 v1.18.3-eksbuild.2  unsupported
+
+1 ok, 0 behind, 1 blocks-upgrade, 1 unsupported
+```
+
 See [`examples/`](examples/) for full JSON and SARIF samples.
 
 ### Flags
@@ -64,7 +83,25 @@ See [`examples/`](examples/) for full JSON and SARIF samples.
 | `--cluster` | all clusters | Cluster name to check; repeat for several. |
 | `--region` | env/profile | AWS region. |
 | `-o, --output` | `table` | `table`, `json`, or `sarif`. |
-| `--fail-on` | `none` | Exit non-zero when a finding is at least this severe: `none`, `behind`, `unsupported`. |
+| `--fail-on` | `none` | Exit non-zero when a finding is at least this severe: `none`, `behind`, `blocks-upgrade`, `unsupported`. |
+| `--target-version` | off | Also check every add-on against this Kubernetes version: `MAJOR.MINOR` (e.g. `1.31`) or `next` for each cluster's minor + 1. |
+
+Severity order for `--fail-on`: `ok` < `behind` < `blocks-upgrade` < `unsupported`.
+An add-on that is already `unsupported` stays `unsupported` even when it is also
+incompatible with the target.
+
+`--target-version` notes:
+
+- Clusters already on or above an explicit target get no target check (their
+  target fields are empty).
+- If EKS returns no add-on versions at all for the target Kubernetes version
+  (a typo, or a version EKS does not offer yet in the region), the run fails
+  with exit code `1` instead of marking every add-on `blocks-upgrade`.
+- JSON findings gain `targetVersion`, `targetCompatible` and `targetRecommended`;
+  without the flag those fields are omitted. The JSON summary always has a
+  `blocksUpgrade` count (`0` without the flag).
+- SARIF reports `blocks-upgrade` add-ons under rule `addon-blocks-upgrade`
+  (level `error`).
 
 Exit codes: `0` clean (or drift below `--fail-on`), `2` drift met the `--fail-on`
 threshold, `1` an error occurred.
@@ -76,7 +113,11 @@ threshold, `1` an error occurred.
 2. `ListAddons` + `DescribeAddon` for each installed add-on's current version.
 3. `DescribeAddonVersions` scoped to the cluster's Kubernetes version returns the
    compatible set; the highest of those is the recommended version.
-4. Version comparison understands the `vX.Y.Z-eksbuild.N` scheme AWS uses, so a
+4. With `--target-version`, one more `DescribeAddonVersions` per add-on scoped
+   to the target version, plus one unscoped call per target version to confirm
+   EKS offers it. The add-on is `blocks-upgrade` when its running version is
+   not in the target's compatible set.
+5. Version comparison understands the `vX.Y.Z-eksbuild.N` scheme AWS uses, so a
    bumped `eksbuild` counter is ordered correctly against a minor/patch bump.
 
 ## Credentials

@@ -19,6 +19,16 @@
               }
             },
             {
+              "id": "addon-blocks-upgrade",
+              "name": "AddonBlocksUpgrade",
+              "shortDescription": {
+                "text": "Add-on version is not compatible with the target Kubernetes version"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              }
+            },
+            {
               "id": "addon-unsupported",
               "name": "AddonUnsupported",
               "shortDescription": {

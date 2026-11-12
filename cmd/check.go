@@ -20,6 +20,7 @@ func newCheckCmd() *cobra.Command {
 		region   string
 		format   string
 		failOn   string
+		target   string
 	)
 
 	cmd := &cobra.Command{
@@ -33,6 +34,9 @@ func newCheckCmd() *cobra.Command {
 			if format != "table" && format != "json" && format != "sarif" {
 				return fmt.Errorf("invalid --output %q: want table, json, or sarif", format)
 			}
+			if err := drift.ValidateTarget(target); err != nil {
+				return fmt.Errorf("invalid --target-version: %w", err)
+			}
 
 			ctx := context.Background()
 			opts := []func(*awsconfig.LoadOptions) error{}
@@ -44,7 +48,7 @@ func newCheckCmd() *cobra.Command {
 				return fmt.Errorf("load AWS config: %w", err)
 			}
 
-			findings, err := drift.New(eks.NewFromConfig(cfg)).Analyze(ctx, clusters)
+			findings, err := drift.New(eks.NewFromConfig(cfg)).WithTarget(target).Analyze(ctx, clusters)
 			if err != nil {
 				return err
 			}
@@ -62,7 +66,8 @@ func newCheckCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&clusters, "cluster", nil, "cluster name to check (repeatable); default: every cluster in the region")
 	cmd.Flags().StringVar(&region, "region", "", "AWS region (default: from environment/profile)")
 	cmd.Flags().StringVarP(&format, "output", "o", "table", "output format: table, json, sarif")
-	cmd.Flags().StringVar(&failOn, "fail-on", "none", "exit non-zero when a finding is at least this severe: none, behind, unsupported")
+	cmd.Flags().StringVar(&failOn, "fail-on", "none", "exit non-zero when a finding is at least this severe: none, behind, blocks-upgrade, unsupported")
+	cmd.Flags().StringVar(&target, "target-version", "", "also check add-ons against this Kubernetes version (MAJOR.MINOR, or \"next\" for each cluster's minor + 1)")
 	return cmd
 }
 
@@ -83,9 +88,11 @@ func parseFailOn(s string) (drift.Class, error) {
 		return drift.ClassOK, nil
 	case "behind":
 		return drift.ClassBehind, nil
+	case "blocks-upgrade":
+		return drift.ClassBlocksUpgrade, nil
 	case "unsupported":
 		return drift.ClassUnsupported, nil
 	default:
-		return "", fmt.Errorf("invalid --fail-on %q: want none, behind, or unsupported", s)
+		return "", fmt.Errorf("invalid --fail-on %q: want none, behind, blocks-upgrade, or unsupported", s)
 	}
 }
