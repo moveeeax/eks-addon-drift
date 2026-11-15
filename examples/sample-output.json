@@ -2,6 +2,7 @@
   "summary": {
     "ok": 1,
     "behind": 1,
+    "blocksUpgrade": 0,
     "unsupported": 1
   },
   "findings": [

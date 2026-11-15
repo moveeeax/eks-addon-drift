@@ -60,6 +60,14 @@ func (f *fakeEKS) DescribeAddon(_ context.Context, in *eks.DescribeAddonInput, _
 func (f *fakeEKS) DescribeAddonVersions(_ context.Context, in *eks.DescribeAddonVersionsInput, _ ...func(*eks.Options)) (*eks.DescribeAddonVersionsOutput, error) {
 	k8s := aws.ToString(in.KubernetesVersion)
 	addon := aws.ToString(in.AddonName)
+	if addon == "" {
+		// Unscoped query: one AddonInfo per add-on offered for this version.
+		var infos []ekstypes.AddonInfo
+		for name := range f.compatible[k8s] {
+			infos = append(infos, ekstypes.AddonInfo{AddonName: aws.String(name)})
+		}
+		return &eks.DescribeAddonVersionsOutput{Addons: infos}, nil
+	}
 	var versions []ekstypes.AddonVersionInfo
 	for _, v := range f.compatible[k8s][addon] {
 		versions = append(versions, ekstypes.AddonVersionInfo{AddonVersion: aws.String(v)})
@@ -186,9 +194,128 @@ func TestShouldFail(t *testing.T) {
 
 func TestSummarize(t *testing.T) {
 	s := Summarize([]Finding{
-		{Class: ClassOK}, {Class: ClassBehind}, {Class: ClassBehind}, {Class: ClassUnsupported},
+		{Class: ClassOK}, {Class: ClassBehind}, {Class: ClassBehind}, {Class: ClassBlocksUpgrade}, {Class: ClassUnsupported},
 	})
-	if s.OK != 1 || s.Behind != 2 || s.Unsupported != 1 {
+	if s.OK != 1 || s.Behind != 2 || s.BlocksUpgrade != 1 || s.Unsupported != 1 {
 		t.Fatalf("summary = %+v", s)
+	}
+}
+
+// withNext adds a 1.30 compatible set to the fake: coredns and vpc-cni carry
+// over, kube-proxy needs a 1.30 build.
+func withNext(f *fakeEKS) *fakeEKS {
+	f.compatible["1.30"] = map[string][]string{
+		"coredns":    {"v1.11.1-eksbuild.9", "v1.11.3-eksbuild.1"},
+		"kube-proxy": {"v1.30.0-eksbuild.3"},
+		"vpc-cni":    {"v1.18.3-eksbuild.2"},
+	}
+	return f
+}
+
+func TestAnalyzeTargetNext(t *testing.T) {
+	findings, err := New(withNext(newFake())).WithTarget(TargetNext).Analyze(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+
+	cases := []struct {
+		cluster, addon string
+		class          Class
+		compatible     bool
+		targetRec      string
+	}{
+		{"prod", "coredns", ClassOK, true, "v1.11.3-eksbuild.1"},
+		{"prod", "kube-proxy", ClassBlocksUpgrade, false, "v1.30.0-eksbuild.3"},
+		// Already broken today: unsupported wins over blocks-upgrade.
+		{"prod", "vpc-cni", ClassUnsupported, false, "v1.18.3-eksbuild.2"},
+		// Behind today and not carried over to 1.30.
+		{"staging", "coredns", ClassBlocksUpgrade, false, "v1.11.3-eksbuild.1"},
+	}
+	for _, c := range cases {
+		got := classOf(t, findings, c.cluster, c.addon)
+		if got.TargetVersion != "1.30" {
+			t.Errorf("%s/%s: targetVersion = %q, want 1.30", c.cluster, c.addon, got.TargetVersion)
+		}
+		if got.Class != c.class {
+			t.Errorf("%s/%s: class = %s, want %s", c.cluster, c.addon, got.Class, c.class)
+		}
+		if got.TargetCompatible == nil || *got.TargetCompatible != c.compatible {
+			t.Errorf("%s/%s: targetCompatible = %v, want %v", c.cluster, c.addon, got.TargetCompatible, c.compatible)
+		}
+		if got.TargetRecommended != c.targetRec {
+			t.Errorf("%s/%s: targetRecommended = %q, want %q", c.cluster, c.addon, got.TargetRecommended, c.targetRec)
+		}
+	}
+}
+
+func TestAnalyzeTargetExplicit(t *testing.T) {
+	f := withNext(newFake())
+	f.clusterVersion["staging"] = "1.30"
+	findings, err := New(f).WithTarget("1.30").Analyze(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if got := classOf(t, findings, "prod", "kube-proxy"); got.Class != ClassBlocksUpgrade {
+		t.Errorf("prod/kube-proxy: class = %s, want blocks-upgrade", got.Class)
+	}
+	// staging is already on 1.30: no upgrade, so no target check.
+	got := classOf(t, findings, "staging", "coredns")
+	if got.HasTarget() || got.TargetCompatible != nil || got.TargetRecommended != "" {
+		t.Errorf("staging/coredns: target fields set for a cluster already on the target: %+v", got)
+	}
+}
+
+func TestAnalyzeNoTargetLeavesFieldsEmpty(t *testing.T) {
+	findings, err := New(withNext(newFake())).Analyze(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	for _, f := range findings {
+		if f.HasTarget() || f.TargetCompatible != nil || f.Class == ClassBlocksUpgrade {
+			t.Errorf("%s/%s: target data without --target-version: %+v", f.Cluster, f.Addon, f)
+		}
+	}
+}
+
+func TestAnalyzeTargetNotOffered(t *testing.T) {
+	// No 1.30 data in the fake: EKS offers nothing for that version.
+	_, err := New(newFake()).WithTarget(TargetNext).Analyze(context.Background(), nil)
+	if err == nil {
+		t.Fatal("want an error for a target version EKS does not offer")
+	}
+}
+
+func TestValidateTarget(t *testing.T) {
+	for _, ok := range []string{"", "next", "1.31", " 1.31 "} {
+		if err := ValidateTarget(ok); err != nil {
+			t.Errorf("ValidateTarget(%q): %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"1", "1.31.0", "latest", "1.x", "-1.2"} {
+		if err := ValidateTarget(bad); err == nil {
+			t.Errorf("ValidateTarget(%q): want error", bad)
+		}
+	}
+}
+
+func TestShouldFailBlocksUpgrade(t *testing.T) {
+	behind := []Finding{{Class: ClassBehind}}
+	blocks := []Finding{{Class: ClassOK}, {Class: ClassBlocksUpgrade}}
+	unsupported := []Finding{{Class: ClassUnsupported}}
+
+	if ShouldFail(behind, ClassBlocksUpgrade) {
+		t.Error("behind only, threshold blocks-upgrade: want no fail")
+	}
+	if !ShouldFail(blocks, ClassBlocksUpgrade) {
+		t.Error("blocks-upgrade present, threshold blocks-upgrade: want fail")
+	}
+	if !ShouldFail(blocks, ClassBehind) {
+		t.Error("blocks-upgrade present, threshold behind: want fail")
+	}
+	if ShouldFail(blocks, ClassUnsupported) {
+		t.Error("blocks-upgrade only, threshold unsupported: want no fail")
+	}
+	if !ShouldFail(unsupported, ClassBlocksUpgrade) {
+		t.Error("unsupported present, threshold blocks-upgrade: want fail")
 	}
 }

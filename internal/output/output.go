@@ -10,28 +10,61 @@ import (
 	"github.com/moveeeax/eks-addon-drift/internal/drift"
 )
 
-// Table writes a human-readable, aligned table plus a one-line summary.
+// Table writes a human-readable, aligned table plus a one-line summary. The
+// TARGET columns and the blocks-upgrade count appear only when at least one
+// finding carries a target-version check.
 func Table(w io.Writer, findings []drift.Finding) error {
-	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "CLUSTER\tK8S\tADDON\tCURRENT\tRECOMMENDED\tSTATUS")
+	withTarget := false
 	for _, f := range findings {
-		rec := f.Recommended
-		if rec == "" {
-			rec = "-"
+		if f.HasTarget() {
+			withTarget = true
+			break
 		}
-		cur := f.Current
-		if cur == "" {
-			cur = "-"
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	if withTarget {
+		fmt.Fprintln(tw, "CLUSTER\tK8S\tADDON\tCURRENT\tRECOMMENDED\tTARGET\tTARGET-COMPATIBLE\tTARGET-RECOMMENDED\tSTATUS")
+	} else {
+		fmt.Fprintln(tw, "CLUSTER\tK8S\tADDON\tCURRENT\tRECOMMENDED\tSTATUS")
+	}
+	for _, f := range findings {
+		cur, rec := dash(f.Current), dash(f.Recommended)
+		if !withTarget {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				f.Cluster, f.ClusterVersion, f.Addon, cur, rec, f.Class)
+			continue
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			f.Cluster, f.ClusterVersion, f.Addon, cur, rec, f.Class)
+		compat := "-"
+		if f.TargetCompatible != nil {
+			compat = "no"
+			if *f.TargetCompatible {
+				compat = "yes"
+			}
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			f.Cluster, f.ClusterVersion, f.Addon, cur, rec,
+			dash(f.TargetVersion), compat, dash(f.TargetRecommended), f.Class)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 	s := drift.Summarize(findings)
-	_, err := fmt.Fprintf(w, "\n%d ok, %d behind, %d unsupported\n", s.OK, s.Behind, s.Unsupported)
+	var err error
+	if withTarget {
+		_, err = fmt.Fprintf(w, "\n%d ok, %d behind, %d blocks-upgrade, %d unsupported\n",
+			s.OK, s.Behind, s.BlocksUpgrade, s.Unsupported)
+	} else {
+		_, err = fmt.Fprintf(w, "\n%d ok, %d behind, %d unsupported\n", s.OK, s.Behind, s.Unsupported)
+	}
 	return err
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // Report is the top-level JSON document.
@@ -50,7 +83,7 @@ func JSON(w io.Writer, findings []drift.Finding) error {
 	return enc.Encode(Report{Summary: drift.Summarize(findings), Findings: findings})
 }
 
-// SARIF writes a SARIF 2.1.0 log. Only behind/unsupported add-ons become
+// SARIF writes a SARIF 2.1.0 log. Only behind/blocks-upgrade/unsupported add-ons become
 // results (ok add-ons carry no finding), so the report drops cleanly into a
 // code-scanning dashboard.
 func SARIF(w io.Writer, findings []drift.Finding) error {
@@ -60,6 +93,12 @@ func SARIF(w io.Writer, findings []drift.Finding) error {
 			Name:             "AddonBehind",
 			ShortDescription: sarifText{Text: "Add-on is behind the latest compatible version"},
 			DefaultConfig:    sarifConfig{Level: "warning"},
+		},
+		{
+			ID:               "addon-blocks-upgrade",
+			Name:             "AddonBlocksUpgrade",
+			ShortDescription: sarifText{Text: "Add-on version is not compatible with the target Kubernetes version"},
+			DefaultConfig:    sarifConfig{Level: "error"},
 		},
 		{
 			ID:               "addon-unsupported",
@@ -77,6 +116,14 @@ func SARIF(w io.Writer, findings []drift.Finding) error {
 			ruleID, level = "addon-behind", "warning"
 			msg = fmt.Sprintf("Add-on %s on cluster %s is at %s; latest compatible with Kubernetes %s is %s.",
 				f.Addon, f.Cluster, f.Current, f.ClusterVersion, f.Recommended)
+		case drift.ClassBlocksUpgrade:
+			ruleID, level = "addon-blocks-upgrade", "error"
+			rec := f.TargetRecommended
+			if rec == "" {
+				rec = "none"
+			}
+			msg = fmt.Sprintf("Add-on %s on cluster %s runs %s, which is not compatible with target Kubernetes %s; upgrade it before the control plane (latest compatible with %s: %s).",
+				f.Addon, f.Cluster, f.Current, f.TargetVersion, f.TargetVersion, rec)
 		case drift.ClassUnsupported:
 			ruleID, level = "addon-unsupported", "error"
 			rec := f.Recommended
